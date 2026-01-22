@@ -2,6 +2,23 @@
 
 A beautiful Python application that tracks and visualizes your mouse movements across the screen. See exactly how often your cursor has passed over each pixel with stunning heatmap visualizations.
 
+## 📥 Download (Kein Python benötigt!)
+
+**Fertiges Programm direkt herunterladen:**
+
+👉 **[Zur Download-Seite (Releases)](../../releases/latest)**
+
+Einfach die Version für dein Betriebssystem herunterladen und starten:
+- 🪟 **Windows**: `MouseTracker-Windows.exe` (Doppelklick zum Starten)
+- 🐧 **Linux**: `MouseTracker-Linux` (Ausführbar machen: `chmod +x`, dann starten)
+- 🍎 **macOS**: `MouseTracker-macOS` (Rechtsklick → Öffnen beim ersten Start)
+
+**Keine Installation nötig** - einfach runterladen und loslegen! 🚀
+
+---
+
+**Oder als Python-Script ausführen:**
+
 **Available in two versions:**
 - 🎨 **GUI Version** - Modern, minimalistic interface (recommended)
 - ⌨️ **CLI Version** - Command-line interface for advanced users
@@ -321,12 +338,47 @@ The GUI features:
 - File dialogs for save/load
 - Popup preview window for heatmaps
 
+## 🔧 For Developers
+
+### Creating a New Release
+
+Releases are automatically built by GitHub Actions. To create a new release:
+
+**Option 1: Use the helper script**
+```bash
+# Linux/Mac
+./create_release.sh
+
+# Windows
+create_release.bat
+```
+
+**Option 2: Manual**
+```bash
+# Create and push a version tag
+git tag -a v1.0.0 -m "Release v1.0.0"
+git push origin v1.0.0
+```
+
+GitHub Actions will automatically:
+1. Build executables for Windows, Linux, and macOS
+2. Create a GitHub Release
+3. Upload all executables as downloadable assets
+
+### CI/CD Workflows
+
+This project includes two GitHub Actions workflows:
+
+- **`build-executables.yml`**: Triggered on version tags (v*), builds and publishes releases
+- **`test-build.yml`**: Triggered on pushes/PRs, tests builds on all platforms
+
 ## Contributing
 
 Feel free to fork and improve this project. Suggestions for improvements:
 
 - ✅ ~~Real-time visualization window~~ (Implemented in GUI)
 - ✅ ~~Settings panel~~ (Implemented in GUI)
+- ✅ ~~Automated builds~~ (Implemented with GitHub Actions)
 - Multiple monitor support
 - Click tracking alongside movement
 - Path replay functionality

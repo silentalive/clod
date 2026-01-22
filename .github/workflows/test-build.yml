@@ -1,0 +1,59 @@
+name: Test Build
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test-build:
+    name: Test build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [windows-latest, ubuntu-latest, macos-latest]
+        python-version: ['3.9', '3.11']
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v5
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Test imports
+      run: |
+        python -c "import mouse_tracker_gui; print('GUI imports OK')"
+        python -c "import mouse_tracker; print('CLI imports OK')"
+
+    - name: Syntax check
+      run: |
+        python -m py_compile mouse_tracker_gui.py
+        python -m py_compile mouse_tracker.py
+        python -m py_compile example_analysis.py
+        python -m py_compile run_gui.py
+        python -m py_compile build_executable.py
+
+    - name: Install PyInstaller
+      run: pip install pyinstaller
+
+    - name: Test executable build
+      run: |
+        pyinstaller --name=MouseTracker --onefile --windowed mouse_tracker_gui.py
+
+    - name: Verify executable exists
+      shell: bash
+      run: |
+        if [ "${{ runner.os }}" == "Windows" ]; then
+          test -f dist/MouseTracker.exe && echo "✓ Executable built successfully"
+        else
+          test -f dist/MouseTracker && echo "✓ Executable built successfully"
+        fi

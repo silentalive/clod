@@ -1,0 +1,132 @@
+name: Build Executables
+
+on:
+  push:
+    tags:
+      - 'v*'  # Triggers on version tags like v1.0.0
+  workflow_dispatch:  # Allows manual trigger
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            output_name: MouseTracker-Windows.exe
+            build_name: MouseTracker.exe
+          - os: ubuntu-latest
+            output_name: MouseTracker-Linux
+            build_name: MouseTracker
+          - os: macos-latest
+            output_name: MouseTracker-macOS
+            build_name: MouseTracker
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        pip install pyinstaller
+
+    - name: Build executable
+      run: |
+        pyinstaller --name=MouseTracker --onefile --windowed mouse_tracker_gui.py
+
+    - name: Rename executable (Unix)
+      if: runner.os != 'Windows'
+      run: |
+        mv dist/${{ matrix.build_name }} dist/${{ matrix.output_name }}
+
+    - name: Rename executable (Windows)
+      if: runner.os == 'Windows'
+      run: |
+        move dist\${{ matrix.build_name }} dist\${{ matrix.output_name }}
+
+    - name: Upload executable
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.output_name }}
+        path: dist/${{ matrix.output_name }}
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download all artifacts
+      uses: actions/download-artifact@v4
+      with:
+        path: ./artifacts
+
+    - name: Display structure of downloaded files
+      run: ls -R ./artifacts
+
+    - name: Create Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          artifacts/MouseTracker-Windows.exe/MouseTracker-Windows.exe
+          artifacts/MouseTracker-Linux/MouseTracker-Linux
+          artifacts/MouseTracker-macOS/MouseTracker-macOS
+        body: |
+          ## 🖱️ Mouse Movement Tracker - Release ${{ github.ref_name }}
+
+          ### 📥 Downloads
+
+          Download the version for your operating system:
+
+          - **Windows**: `MouseTracker-Windows.exe`
+          - **Linux**: `MouseTracker-Linux`
+          - **macOS**: `MouseTracker-macOS`
+
+          ### 🚀 How to Use
+
+          **Windows:**
+          1. Download `MouseTracker-Windows.exe`
+          2. Double-click to run
+          3. If Windows SmartScreen appears, click "More info" → "Run anyway"
+
+          **Linux:**
+          1. Download `MouseTracker-Linux`
+          2. Make executable: `chmod +x MouseTracker-Linux`
+          3. Run: `./MouseTracker-Linux`
+
+          **macOS:**
+          1. Download `MouseTracker-macOS`
+          2. Right-click → Open (first time only, to bypass Gatekeeper)
+          3. Grant accessibility permissions when prompted
+
+          ### ✨ Features
+
+          - 🎨 Modern, rounded design with dark theme
+          - ⚙️ Easy settings panel for screen size configuration
+          - 📊 Real-time statistics display
+          - 🎯 Live tracking status and progress
+          - 💾 Save and load sessions
+          - 🖼️ Built-in heatmap preview and export
+
+          ### 📝 Notes
+
+          - No Python installation required!
+          - File size: ~50-100 MB (includes all dependencies)
+          - First launch may take a few seconds
+          - All data is stored locally on your computer
+
+          For source code and manual installation, see the [README](https://github.com/${{ github.repository }}/blob/main/README.md).
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
