@@ -37,6 +37,10 @@ ENV/
 # Mouse tracker output files
 mouse_data_*.npz
 mouse_heatmap_*.png
+heatmap_*.png
+
+# PyInstaller
+*.spec
 
 # OS
 .DS_Store

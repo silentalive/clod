@@ -1,9 +1,24 @@
-# Mouse Movement Tracker
+# 🖱️ Mouse Movement Tracker
 
-A Python application that tracks and visualizes your mouse movements across the screen. See exactly how often your cursor has passed over each pixel with beautiful heatmap visualizations.
+A beautiful Python application that tracks and visualizes your mouse movements across the screen. See exactly how often your cursor has passed over each pixel with stunning heatmap visualizations.
 
-## Features
+**Available in two versions:**
+- 🎨 **GUI Version** - Modern, minimalistic interface (recommended)
+- ⌨️ **CLI Version** - Command-line interface for advanced users
 
+## ✨ Features
+
+### GUI Version (mouse_tracker_gui.py)
+- 🎨 Modern, rounded design with dark theme
+- ⚙️ Easy settings panel for screen size configuration
+- 📊 Real-time statistics display
+- 🎯 Live tracking status and progress
+- 💾 Save and load sessions with file dialogs
+- 🖼️ Built-in heatmap preview window
+- 📤 Export heatmaps to full resolution
+- 🚀 Can be built as standalone executable
+
+### CLI Version (mouse_tracker.py)
 - Real-time mouse movement tracking
 - Pixel-level precision tracking
 - Automatic screen size detection
@@ -12,14 +27,25 @@ A Python application that tracks and visualizes your mouse movements across the 
 - Save and load tracking sessions
 - Low memory footprint using NumPy
 
-## Installation
+## 🚀 Quick Start
 
-### Prerequisites
+### Easiest Way (Recommended)
 
-- Python 3.7 or higher
-- pip package manager
+**Windows:**
+1. Double-click `run_gui.bat`
 
-### Setup
+**Linux/Mac:**
+1. Make executable: `chmod +x run_gui.sh`
+2. Run: `./run_gui.sh`
+
+**Or manually:**
+```bash
+python run_gui.py
+```
+
+The launcher will automatically install missing dependencies and start the GUI!
+
+### Manual Installation
 
 1. Clone or download this repository
 
@@ -28,11 +54,44 @@ A Python application that tracks and visualizes your mouse movements across the 
 pip install -r requirements.txt
 ```
 
-## Usage
+3. Run the GUI version:
+```bash
+python mouse_tracker_gui.py
+```
 
-### Basic Usage
+## 📖 Usage Guide
 
-Simply run the tracker:
+### GUI Version (Recommended)
+
+Start the GUI application:
+
+```bash
+python mouse_tracker_gui.py
+```
+
+**Interface Overview:**
+- **Settings Panel**: Configure your screen width and height
+- **Start/Stop Button**: Begin or end tracking
+- **Live Statistics**: See real-time tracking data
+  - Duration: How long you've been tracking
+  - Movements: Total mouse movements recorded
+  - Unique Pixels: How many different pixels were visited
+  - Coverage: Percentage of screen covered
+  - Max Visits: Highest number of visits to a single pixel
+- **Save/Load**: Save your session or load previous data
+- **Preview**: Generate and view heatmap visualization
+
+**Workflow:**
+1. Adjust screen size in settings if needed (auto-detected by default)
+2. Click "▶ Start Tracking"
+3. Move your mouse around
+4. Click "⏸ Stop Tracking" when done
+5. Click "🎨 Generate Heatmap Preview" to see visualization
+6. Export full resolution or save data for later
+
+### CLI Version
+
+Run the command-line tracker:
 
 ```bash
 python mouse_tracker.py
@@ -189,12 +248,13 @@ You may need to run with appropriate permissions for mouse event capture:
 sudo python mouse_tracker.py  # Use with caution
 ```
 
-## Dependencies
+## 📚 Dependencies
 
 - **numpy**: Efficient array operations for pixel tracking
 - **Pillow**: Image generation and manipulation
 - **pynput**: Cross-platform mouse event listener
 - **screeninfo**: Screen size detection (optional)
+- **customtkinter**: Modern GUI framework (for GUI version only)
 
 ## Performance
 
@@ -217,16 +277,62 @@ sudo python mouse_tracker.py  # Use with caution
 
 This project is provided as-is for educational and personal use.
 
+## 📦 Building Standalone Executable
+
+Want to create a standalone program that doesn't require Python?
+
+### Build Instructions
+
+1. Install PyInstaller (if not already installed):
+```bash
+pip install pyinstaller
+```
+
+2. Run the build script:
+```bash
+python build_executable.py
+```
+
+3. Find your executable in the `dist/` folder:
+   - **Windows**: `dist/MouseTracker.exe`
+   - **Linux/Mac**: `dist/MouseTracker`
+
+4. Double-click to run - no Python installation needed!
+
+**Note**: The executable will be 50-100 MB due to bundled dependencies.
+
+## 📁 Project Files
+
+- `mouse_tracker_gui.py` - Modern GUI application
+- `mouse_tracker.py` - CLI version
+- `example_analysis.py` - Script for analyzing saved data
+- `run_gui.py` - Smart launcher with dependency checking
+- `run_gui.bat` / `run_gui.sh` - Platform-specific launchers
+- `build_executable.py` - Build standalone executable
+- `requirements.txt` - Python dependencies
+
+## 🎨 GUI Screenshots
+
+The GUI features:
+- Clean, modern dark theme
+- Rounded corners and smooth design
+- Real-time statistics cards
+- Interactive buttons with hover effects
+- File dialogs for save/load
+- Popup preview window for heatmaps
+
 ## Contributing
 
 Feel free to fork and improve this project. Suggestions for improvements:
 
-- Real-time visualization window
+- ✅ ~~Real-time visualization window~~ (Implemented in GUI)
+- ✅ ~~Settings panel~~ (Implemented in GUI)
 - Multiple monitor support
 - Click tracking alongside movement
 - Path replay functionality
 - Export to different image formats
 - Custom color schemes
+- Hotkey support for starting/stopping
 
 ## Privacy Note
 
