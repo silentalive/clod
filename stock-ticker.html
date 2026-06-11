@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="default" />
+<meta name="theme-color" content="#FFFFFF" />
+<title>Ticker – Watchlist</title>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  :root {
+    --accent: #FF6A00;
+    --accent-soft: #FFF1E7;
+    --bg: #FFFFFF;
+    --bg-grouped: #F7F7F9;
+    --text: #1C1C1E;
+    --text-2: #6B6B70;
+    --text-3: #A0A0A6;
+    --green: #1FA45A;
+    --green-soft: #E8F6EE;
+    --red: #E03131;
+    --red-soft: #FCEAEA;
+    --card-shadow: 0 1px 2px rgba(0,0,0,0.04), 0 4px 16px rgba(0,0,0,0.06);
+    --radius: 18px;
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; background: var(--bg-grouped); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, "Segoe UI", Roboto, sans-serif;
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior-y: contain;
+  }
+  #root { min-height: 100vh; min-height: 100dvh; }
+  button { font-family: inherit; }
+  input { font-family: inherit; }
+  @keyframes shimmer {
+    0% { background-position: -400px 0; }
+    100% { background-position: 400px 0; }
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  .skeleton {
+    background: linear-gradient(90deg, #EFEFF1 25%, #E4E4E8 50%, #EFEFF1 75%);
+    background-size: 800px 100%;
+    animation: shimmer 1.4s infinite linear;
+    border-radius: 8px;
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+/* ---------------------------------------------------------------- */
+/* Persistenz: window.storage falls verfügbar, sonst In-Memory      */
+/* (bewusst KEIN localStorage)                                       */
+/* ---------------------------------------------------------------- */
+const memStore = {};
+const hasWindowStorage = (() => {
+  try {
+    return typeof window.storage === "object" && window.storage !== null &&
+      typeof window.storage.getItem === "function" &&
+      typeof window.storage.setItem === "function";
+  } catch (e) { return false; }
+})();
+
+async function storageGet(key) {
+  if (hasWindowStorage) {
+    try {
+      let v = await window.storage.getItem(key);
+      if (v && typeof v === "object" && "value" in v) v = v.value;
+      if (v === undefined || v === null) return memStore[key] ?? null;
+      return v;
+    } catch (e) { return memStore[key] ?? null; }
+  }
+  return memStore[key] ?? null;
+}
+
+async function storageSet(key, value) {
+  memStore[key] = value;
+  if (hasWindowStorage) {
+    try { await window.storage.setItem(key, value); } catch (e) { /* In-Memory-Fallback greift */ }
+  }
+}
+
+const KEYS = {
+  apiKey: "ticker.apiKey",
+  watchlist: "ticker.watchlist",
+  settings: "ticker.settings",
+};
+
+/* ---------------------------------------------------------------- */
+/* Finnhub-API                                                       */
+/* ---------------------------------------------------------------- */
+class ApiError extends Error {
+  constructor(kind, message) { super(message || kind); this.kind = kind; }
+}
+
+async function finnhub(path, apiKey) {
+  let res;
+  try {
+    const sep = path.includes("?") ? "&" : "?";
+    res = await fetch(`https://finnhub.io/api/v1${path}${sep}token=${encodeURIComponent(apiKey)}`);
+  } catch (e) {
+    throw new ApiError("network", "Netzwerkfehler");
+  }
+  if (res.status === 401 || res.status === 403) throw new ApiError("auth", "API-Key ungültig");
+  if (res.status === 429) throw new ApiError("rate", "Rate-Limit erreicht");
+  if (!res.ok) throw new ApiError("http", `HTTP ${res.status}`);
+  return res.json();
+}
+
+const ERROR_TEXT = {
+  auth: "Der API-Key scheint ungültig zu sein. Bitte prüfe ihn in den Einstellungen.",
+  rate: "Finnhub-Rate-Limit erreicht. Die Kurse werden beim nächsten Intervall erneut geladen – ggf. Intervall erhöhen.",
+  network: "Keine Verbindung. Bitte Internetverbindung prüfen.",
+  http: "Finnhub hat einen Fehler gemeldet. Bitte später erneut versuchen.",
+  nodata: "Für dieses Symbol gibt es gerade keine Daten.",
+};
+
+function errorText(err) {
+  return ERROR_TEXT[err && err.kind] || ERROR_TEXT.http;
+}
+
+/* ---------------------------------------------------------------- */
+/* Format-Helfer                                                     */
+/* ---------------------------------------------------------------- */
+function fmtPrice(v) {
+  if (v === null || v === undefined || !isFinite(v)) return "–";
+  return v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtPct(v) {
+  if (v === null || v === undefined || !isFinite(v)) return "–";
+  const sign = v > 0 ? "+" : "";
+  return sign + v.toLocaleString("de-DE", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " %";
+}
+function fmtNewsDate(unixSec) {
+  try {
+    return new Date(unixSec * 1000).toLocaleDateString("de-DE", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
+  } catch (e) { return ""; }
+}
+function fmtClock(date) {
+  try {
+    return date.toLocaleTimeString("de-DE", { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  } catch (e) { return ""; }
+}
+function isoDaysAgo(days) {
+  const d = new Date(Date.now() - days * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+/* ---------------------------------------------------------------- */
+/* Kleine UI-Bausteine                                               */
+/* ---------------------------------------------------------------- */
+function Spinner({ size = 18, color = "var(--accent)" }) {
+  return (
+    <span style={{
+      display: "inline-block", width: size, height: size,
+      border: `2.5px solid ${color}`, borderTopColor: "transparent",
+      borderRadius: "50%", animation: "spin 0.8s linear infinite",
+    }} />
+  );
+}
+
+function Arrow({ up, color }) {
+  return (
+    <svg width="12" height="12" viewBox="0 0 12 12" style={{ flexShrink: 0 }}>
+      {up
+        ? <path d="M6 2 L10.5 8.5 L1.5 8.5 Z" fill={color} />
+        : <path d="M6 10 L1.5 3.5 L10.5 3.5 Z" fill={color} />}
+    </svg>
+  );
+}
+
+function ChangePill({ dp }) {
+  if (dp === null || dp === undefined || !isFinite(dp)) {
+    return <span style={{ fontSize: 14, color: "var(--text-3)" }}>–</span>;
+  }
+  const up = dp >= 0;
+  const color = up ? "var(--green)" : "var(--red)";
+  const bg = up ? "var(--green-soft)" : "var(--red-soft)";
+  return (
+    <span style={{
+      display: "inline-flex", alignItems: "center", gap: 5,
+      background: bg, color, fontWeight: 600, fontSize: 14,
+      padding: "4px 10px", borderRadius: 999,
+      fontVariantNumeric: "tabular-nums",
+    }}>
+      <Arrow up={up} color={color} />
+      {fmtPct(dp)}
+    </span>
+  );
+}
+
+function MoveBadge({ dp }) {
+  return (
+    <span style={{
+      background: "var(--accent)", color: "#fff", fontSize: 11, fontWeight: 700,
+      padding: "3px 8px", borderRadius: 999, letterSpacing: 0.3,
+      textTransform: "uppercase",
+    }}>
+      Bewegung {fmtPct(Math.abs(dp))}
+    </span>
+  );
+}
+
+function Card({ children, onClick, highlighted, style }) {
+  return (
+    <div
+      onClick={onClick}
+      style={{
+        background: "var(--bg)",
+        borderRadius: "var(--radius)",
+        boxShadow: "var(--card-shadow)",
+        border: highlighted ? "1.5px solid var(--accent)" : "1.5px solid transparent",
+        padding: 16,
+        cursor: onClick ? "pointer" : "default",
+        ...style,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function PrimaryButton({ children, onClick, disabled, style }) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      style={{
+        background: disabled ? "#FFC59E" : "var(--accent)",
+        color: "#fff", border: "none", borderRadius: 14,
+        fontSize: 17, fontWeight: 600, padding: "15px 20px",
+        width: "100%", cursor: disabled ? "default" : "pointer",
+        minHeight: 50,
+        ...style,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function XButton({ symbol }) {
+  return (
+    <a
+      href={`https://x.com/search?q=%24${encodeURIComponent(symbol)}&f=live`}
+      target="_blank"
+      rel="noopener noreferrer"
+      style={{
+        display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        background: "var(--text)", color: "#fff", textDecoration: "none",
+        borderRadius: 14, fontSize: 15, fontWeight: 600, padding: "13px 16px",
+        minHeight: 48,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="#fff">
+        <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231 5.45-6.231Zm-1.161 17.52h1.833L7.084 4.126H5.117L17.083 19.77Z"/>
+      </svg>
+      ${symbol} auf X ansehen
+    </a>
+  );
+}
+
+/* Sparkline aus während der Sitzung gesammelten Kurspunkten */
+function Sparkline({ points, width = 280, height = 70 }) {
+  if (!points || points.length < 2) return null;
+  const vals = points.map(p => p.c);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const span = max - min || 1;
+  const pad = 4;
+  const step = (width - pad * 2) / (points.length - 1);
+  const coords = points.map((p, i) => {
+    const x = pad + i * step;
+    const y = pad + (1 - (p.c - min) / span) * (height - pad * 2);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  });
+  const up = vals[vals.length - 1] >= vals[0];
+  const color = up ? "var(--green)" : "var(--red)";
+  return (
+    <svg width="100%" height={height} viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" style={{ display: "block" }}>
+      <polyline points={coords.join(" ")} fill="none" stroke={color} strokeWidth="2" strokeLinejoin="round" strokeLinecap="round" />
+      <circle cx={coords[coords.length - 1].split(",")[0]} cy={coords[coords.length - 1].split(",")[1]} r="3" fill={color} />
+    </svg>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* News-Liste (wird in Detail und im "Warum?"-Bereich genutzt)       */
+/* ---------------------------------------------------------------- */
+function NewsList({ state, limit }) {
+  if (!state) return null;
+  if (state.loading) {
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+        {[0, 1, 2].map(i => (
+          <div key={i}>
+            <div className="skeleton" style={{ height: 14, width: "90%", marginBottom: 6 }} />
+            <div className="skeleton" style={{ height: 11, width: "45%" }} />
+          </div>
+        ))}
+      </div>
+    );
+  }
+  if (state.error) {
+    return <p style={{ fontSize: 14, color: "var(--text-2)", margin: 0 }}>{errorText(state.error)}</p>;
+  }
+  if (!state.items || state.items.length === 0) {
+    return <p style={{ fontSize: 14, color: "var(--text-2)", margin: 0 }}>Keine aktuellen Headlines gefunden.</p>;
+  }
+  const items = limit ? state.items.slice(0, limit) : state.items;
+  return (
+    <div style={{ display: "flex", flexDirection: "column" }}>
+      {items.map((n, i) => (
+        <a
+          key={n.id || i}
+          href={n.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+          style={{
+            textDecoration: "none", color: "var(--text)",
+            padding: "11px 0",
+            borderTop: i === 0 ? "none" : "1px solid #F0F0F2",
+            display: "block", minHeight: 44,
+          }}
+        >
+          <div style={{ fontSize: 14.5, fontWeight: 500, lineHeight: 1.35 }}>{n.headline}</div>
+          <div style={{ fontSize: 12, color: "var(--text-3)", marginTop: 4 }}>
+            {n.source} · {fmtNewsDate(n.datetime)}
+          </div>
+        </a>
+      ))}
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* API-Key-Eingabe (Onboarding)                                      */
+/* ---------------------------------------------------------------- */
+function KeyScreen({ onSubmit, busy, error }) {
+  const [value, setValue] = useState("");
+  return (
+    <div style={{
+      minHeight: "100dvh", display: "flex", flexDirection: "column", justifyContent: "center",
+      padding: "calc(var(--safe-top) + 24px) 24px calc(var(--safe-bottom) + 24px)",
+      maxWidth: 480, margin: "0 auto",
+    }}>
+      <div style={{
+        width: 64, height: 64, borderRadius: 18, background: "var(--accent)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        marginBottom: 24, boxShadow: "0 8px 24px rgba(255,106,0,0.35)",
+      }}>
+        <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="3 16 8.5 10.5 13 14.5 21 6" />
+          <polyline points="15 6 21 6 21 12" />
+        </svg>
+      </div>
+      <h1 style={{ fontSize: 30, fontWeight: 800, margin: "0 0 8px", letterSpacing: -0.5 }}>Ticker</h1>
+      <p style={{ fontSize: 16, color: "var(--text-2)", lineHeight: 1.45, margin: "0 0 28px" }}>
+        Echtzeit-Kurse für deine Watchlist. Dafür brauchst du einen kostenlosen
+        Finnhub-API-Key von <span style={{ fontWeight: 600 }}>finnhub.io</span>.
+      </p>
+      <input
+        value={value}
+        onChange={(e) => setValue(e.target.value.trim())}
+        placeholder="Finnhub API-Key"
+        autoCapitalize="none"
+        autoCorrect="off"
+        spellCheck="false"
+        style={{
+          fontSize: 17, padding: "15px 16px", borderRadius: 14,
+          border: "1.5px solid #E3E3E7", background: "var(--bg)",
+          outline: "none", width: "100%", marginBottom: 12, minHeight: 52,
+        }}
+        onKeyDown={(e) => { if (e.key === "Enter" && value && !busy) onSubmit(value); }}
+        onFocus={(e) => e.target.style.borderColor = "var(--accent)"}
+        onBlur={(e) => e.target.style.borderColor = "#E3E3E7"}
+      />
+      {error && (
+        <p style={{ fontSize: 14, color: "var(--red)", margin: "0 0 12px" }}>{error}</p>
+      )}
+      <PrimaryButton onClick={() => onSubmit(value)} disabled={!value || busy}>
+        {busy ? <Spinner size={18} color="#fff" /> : "Los geht’s"}
+      </PrimaryButton>
+      <p style={{ fontSize: 13, color: "var(--text-3)", marginTop: 16, lineHeight: 1.5 }}>
+        Der Key wird nur lokal gespeichert und ausschließlich für Anfragen an Finnhub verwendet.
+      </p>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Settings-Sheet                                                    */
+/* ---------------------------------------------------------------- */
+function SettingsSheet({ settings, onChange, onClose, onResetKey }) {
+  const intervals = [30, 45, 60];
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, background: "rgba(0,0,0,0.35)",
+        zIndex: 50, animation: "fadeIn 0.2s ease",
+        display: "flex", alignItems: "flex-end", justifyContent: "center",
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        style={{
+          background: "var(--bg)", width: "100%", maxWidth: 520,
+          borderRadius: "24px 24px 0 0",
+          padding: `24px 20px calc(var(--safe-bottom) + 24px)`,
+          animation: "slideUp 0.25s cubic-bezier(0.32, 0.72, 0, 1)",
+        }}
+      >
+        <div style={{ width: 38, height: 5, borderRadius: 3, background: "#E0E0E4", margin: "0 auto 20px" }} />
+        <h2 style={{ fontSize: 21, fontWeight: 700, margin: "0 0 22px" }}>Einstellungen</h2>
+
+        <div style={{ marginBottom: 26 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+            <span style={{ fontSize: 15.5, fontWeight: 600 }}>Bewegungs-Schwelle</span>
+            <span style={{ fontSize: 17, fontWeight: 700, color: "var(--accent)", fontVariantNumeric: "tabular-nums" }}>
+              {settings.threshold.toLocaleString("de-DE", { minimumFractionDigits: 1 })} %
+            </span>
+          </div>
+          <input
+            type="range" min="2" max="5" step="0.5"
+            value={settings.threshold}
+            onChange={(e) => onChange({ ...settings, threshold: parseFloat(e.target.value) })}
+            style={{ width: "100%", accentColor: "var(--accent)", height: 32 }}
+          />
+          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, color: "var(--text-3)" }}>
+            <span>2 %</span><span>5 %</span>
+          </div>
+          <p style={{ fontSize: 13, color: "var(--text-2)", margin: "8px 0 0", lineHeight: 1.4 }}>
+            Aktien mit einer Tagesveränderung ab dieser Schwelle werden hervorgehoben.
+          </p>
+        </div>
+
+        <div style={{ marginBottom: 28 }}>
+          <div style={{ fontSize: 15.5, fontWeight: 600, marginBottom: 10 }}>Aktualisierung</div>
+          <div style={{ display: "flex", background: "var(--bg-grouped)", borderRadius: 12, padding: 3 }}>
+            {intervals.map(sec => (
+              <button
+                key={sec}
+                onClick={() => onChange({ ...settings, intervalSec: sec })}
+                style={{
+                  flex: 1, border: "none", borderRadius: 10, padding: "11px 0",
+                  fontSize: 14.5, fontWeight: 600, cursor: "pointer", minHeight: 44,
+                  background: settings.intervalSec === sec ? "var(--bg)" : "transparent",
+                  color: settings.intervalSec === sec ? "var(--accent)" : "var(--text-2)",
+                  boxShadow: settings.intervalSec === sec ? "0 1px 4px rgba(0,0,0,0.12)" : "none",
+                }}
+              >
+                {sec} s
+              </button>
+            ))}
+          </div>
+          <p style={{ fontSize: 13, color: "var(--text-2)", margin: "8px 0 0", lineHeight: 1.4 }}>
+            Abstand zwischen den Kurs-Updates – passend zum Finnhub-Free-Tier (60 Aufrufe/Minute).
+          </p>
+        </div>
+
+        <button
+          onClick={onResetKey}
+          style={{
+            width: "100%", background: "var(--bg-grouped)", color: "var(--red)",
+            border: "none", borderRadius: 14, fontSize: 16, fontWeight: 600,
+            padding: "14px 0", cursor: "pointer", minHeight: 50, marginBottom: 10,
+          }}
+        >
+          API-Key ändern
+        </button>
+        <PrimaryButton onClick={onClose}>Fertig</PrimaryButton>
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Watchlist-Karte                                                   */
+/* ---------------------------------------------------------------- */
+function StockCard({ symbol, quote, moved, editMode, onRemove, onOpen, newsState, onLoadNews }) {
+  const [whyOpen, setWhyOpen] = useState(false);
+
+  useEffect(() => { if (!moved) setWhyOpen(false); }, [moved]);
+
+  const toggleWhy = (e) => {
+    e.stopPropagation();
+    const next = !whyOpen;
+    setWhyOpen(next);
+    if (next) onLoadNews(symbol);
+  };
+
+  return (
+    <Card highlighted={moved} onClick={editMode ? undefined : () => onOpen(symbol)}>
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {editMode && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRemove(symbol); }}
+            aria-label={`${symbol} entfernen`}
+            style={{
+              width: 30, height: 30, borderRadius: "50%", border: "none",
+              background: "var(--red)", color: "#fff", fontSize: 18, fontWeight: 700,
+              cursor: "pointer", flexShrink: 0, lineHeight: 1,
+              display: "flex", alignItems: "center", justifyContent: "center",
+            }}
+          >
+            −
+          </button>
+        )}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 17, fontWeight: 700, letterSpacing: 0.2 }}>{symbol}</span>
+            {moved && quote && <MoveBadge dp={quote.dp} />}
+          </div>
+          {quote && quote.error && (
+            <div style={{ fontSize: 12.5, color: "var(--text-3)", marginTop: 3 }}>{errorText(quote.error)}</div>
+          )}
+        </div>
+        <div style={{ textAlign: "right" }}>
+          {quote && quote.c != null ? (
+            <React.Fragment>
+              <div style={{ fontSize: 22, fontWeight: 700, fontVariantNumeric: "tabular-nums", letterSpacing: -0.3 }}>
+                {fmtPrice(quote.c)}
+              </div>
+              <div style={{ marginTop: 5 }}>
+                <ChangePill dp={quote.dp} />
+              </div>
+            </React.Fragment>
+          ) : quote && quote.error ? (
+            <div style={{ fontSize: 20, color: "var(--text-3)" }}>–</div>
+          ) : (
+            <React.Fragment>
+              <div className="skeleton" style={{ height: 22, width: 86, marginLeft: "auto" }} />
+              <div className="skeleton" style={{ height: 15, width: 64, marginTop: 7, marginLeft: "auto" }} />
+            </React.Fragment>
+          )}
+        </div>
+      </div>
+
+      {moved && !editMode && (
+        <div style={{ marginTop: 12, borderTop: "1px solid #F0F0F2", paddingTop: 10 }}>
+          <button
+            onClick={toggleWhy}
+            style={{
+              background: "var(--accent-soft)", color: "var(--accent)",
+              border: "none", borderRadius: 10, fontSize: 14.5, fontWeight: 600,
+              padding: "10px 14px", cursor: "pointer", minHeight: 42,
+              display: "inline-flex", alignItems: "center", gap: 6,
+            }}
+          >
+            Warum? {whyOpen ? "▴" : "▾"}
+          </button>
+          {whyOpen && (
+            <div style={{ marginTop: 12, animation: "fadeIn 0.2s ease" }} onClick={(e) => e.stopPropagation()}>
+              <NewsList state={newsState} limit={3} />
+              <div style={{ marginTop: 12 }}>
+                <XButton symbol={symbol} />
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Detail-Ansicht                                                    */
+/* ---------------------------------------------------------------- */
+function DetailView({ symbol, quote, history, moved, threshold, newsState, onLoadNews, onBack, onRemove }) {
+  useEffect(() => { onLoadNews(symbol); }, [symbol]);
+
+  const stats = quote && quote.c != null ? [
+    ["Eröffnung", quote.o], ["Vortag", quote.pc], ["Hoch", quote.h], ["Tief", quote.l],
+  ] : [];
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, background: "var(--bg-grouped)", zIndex: 40,
+      overflowY: "auto", WebkitOverflowScrolling: "touch",
+      animation: "fadeIn 0.18s ease",
+    }}>
+      <div style={{
+        position: "sticky", top: 0, zIndex: 5,
+        background: "rgba(247,247,249,0.92)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)",
+        padding: `calc(var(--safe-top) + 10px) 16px 10px`,
+        display: "flex", alignItems: "center", justifyContent: "space-between",
+      }}>
+        <button
+          onClick={onBack}
+          style={{
+            background: "none", border: "none", color: "var(--accent)",
+            fontSize: 17, fontWeight: 600, cursor: "pointer", padding: "8px 4px",
+            display: "flex", alignItems: "center", gap: 3, minHeight: 44,
+          }}
+        >
+          <svg width="11" height="18" viewBox="0 0 11 18" fill="none">
+            <path d="M9.5 1.5 L2 9 L9.5 16.5" stroke="var(--accent)" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round"/>
+          </svg>
+          Watchlist
+        </button>
+        <span style={{ fontSize: 17, fontWeight: 700 }}>{symbol}</span>
+        <button
+          onClick={() => onRemove(symbol)}
+          style={{
+            background: "none", border: "none", color: "var(--red)",
+            fontSize: 15, fontWeight: 600, cursor: "pointer", padding: "8px 4px", minHeight: 44,
+          }}
+        >
+          Entfernen
+        </button>
+      </div>
+
+      <div style={{ padding: `8px 16px calc(var(--safe-bottom) + 28px)`, maxWidth: 520, margin: "0 auto" }}>
+        <Card style={{ marginBottom: 14 }}>
+          {quote && quote.c != null ? (
+            <React.Fragment>
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between" }}>
+                <div>
+                  <div style={{ fontSize: 40, fontWeight: 800, letterSpacing: -1, fontVariantNumeric: "tabular-nums", lineHeight: 1.1 }}>
+                    {fmtPrice(quote.c)}
+                  </div>
+                  <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <ChangePill dp={quote.dp} />
+                    {moved && <MoveBadge dp={quote.dp} />}
+                  </div>
+                </div>
+              </div>
+
+              <div style={{ marginTop: 18 }}>
+                {history && history.length >= 2 ? (
+                  <React.Fragment>
+                    <Sparkline points={history} />
+                    <div style={{ fontSize: 11.5, color: "var(--text-3)", marginTop: 6 }}>
+                      Verlauf seit App-Start ({history.length} Messpunkte)
+                    </div>
+                  </React.Fragment>
+                ) : (
+                  <div style={{
+                    background: "var(--bg-grouped)", borderRadius: 12, padding: "14px 16px",
+                    fontSize: 13.5, color: "var(--text-2)", lineHeight: 1.45,
+                  }}>
+                    Der Mini-Chart entsteht aus den Live-Updates – nach ein paar
+                    Aktualisierungen erscheint hier der Kursverlauf.
+                  </div>
+                )}
+              </div>
+
+              {stats.length > 0 && (
+                <div style={{
+                  display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px 16px",
+                  marginTop: 18, borderTop: "1px solid #F0F0F2", paddingTop: 14,
+                }}>
+                  {stats.map(([label, v]) => (
+                    <div key={label} style={{ display: "flex", justifyContent: "space-between" }}>
+                      <span style={{ fontSize: 13.5, color: "var(--text-2)" }}>{label}</span>
+                      <span style={{ fontSize: 13.5, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtPrice(v)}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </React.Fragment>
+          ) : quote && quote.error ? (
+            <p style={{ fontSize: 15, color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>{errorText(quote.error)}</p>
+          ) : (
+            <React.Fragment>
+              <div className="skeleton" style={{ height: 40, width: 150 }} />
+              <div className="skeleton" style={{ height: 20, width: 100, marginTop: 12 }} />
+              <div className="skeleton" style={{ height: 70, width: "100%", marginTop: 18 }} />
+            </React.Fragment>
+          )}
+        </Card>
+
+        {moved && (
+          <div style={{
+            background: "var(--accent-soft)", borderRadius: "var(--radius)",
+            padding: "13px 16px", marginBottom: 14, fontSize: 14, color: "#B34A00", lineHeight: 1.45,
+          }}>
+            <strong>{symbol}</strong> bewegt sich heute um {fmtPct(Math.abs(quote.dp))} – das liegt über
+            deiner Schwelle von {threshold.toLocaleString("de-DE", { minimumFractionDigits: 1 })} %.
+          </div>
+        )}
+
+        <Card style={{ marginBottom: 14 }}>
+          <h3 style={{ fontSize: 16.5, fontWeight: 700, margin: "0 0 6px" }}>News</h3>
+          <NewsList state={newsState} limit={8} />
+        </Card>
+
+        <XButton symbol={symbol} />
+      </div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- */
+/* Haupt-App                                                         */
+/* ---------------------------------------------------------------- */
+const DEFAULT_SETTINGS = { threshold: 3, intervalSec: 45 };
+const DEFAULT_WATCHLIST = ["AAPL", "NVDA", "MSFT"];
+const NEWS_CACHE_MS = 5 * 60 * 1000;
+const MAX_HISTORY = 80;
+
+function App() {
+  const [booted, setBooted] = useState(false);
+  const [apiKey, setApiKey] = useState(null);
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyError, setKeyError] = useState(null);
+
+  const [watchlist, setWatchlist] = useState(DEFAULT_WATCHLIST);
+  const [settings, setSettings] = useState(DEFAULT_SETTINGS);
+  const [quotes, setQuotes] = useState({});       // sym -> {c, dp, d, o, h, l, pc, error}
+  const [history, setHistory] = useState({});     // sym -> [{t, c}]
+  const [news, setNews] = useState({});           // sym -> {loading, items, error, fetchedAt}
+
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState(null);
+  const [globalError, setGlobalError] = useState(null);
+
+  const [addValue, setAddValue] = useState("");
+  const [addBusy, setAddBusy] = useState(false);
+  const [addError, setAddError] = useState(null);
+
+  const [editMode, setEditMode] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [detailSymbol, setDetailSymbol] = useState(null);
+
+  const apiKeyRef = useRef(null);
+  apiKeyRef.current = apiKey;
+  const refreshLock = useRef(false);
+
+  /* ---- Boot: gespeicherten Zustand laden ---- */
+  useEffect(() => {
+    (async () => {
+      try {
+        const [k, wl, st] = await Promise.all([
+          storageGet(KEYS.apiKey),
+          storageGet(KEYS.watchlist),
+          storageGet(KEYS.settings),
+        ]);
+        if (typeof k === "string" && k) setApiKey(k);
+        if (typeof wl === "string") {
+          const parsed = JSON.parse(wl);
+          if (Array.isArray(parsed)) setWatchlist(parsed.filter(s => typeof s === "string"));
+        }
+        if (typeof st === "string") {
+          const parsed = JSON.parse(st);
+          setSettings({
+            threshold: Math.min(5, Math.max(2, parseFloat(parsed.threshold) || 3)),
+            intervalSec: [30, 45, 60].includes(parsed.intervalSec) ? parsed.intervalSec : 45,
+          });
+        }
+      } catch (e) { /* mit Defaults starten */ }
+      setBooted(true);
+    })();
+  }, []);
+
+  /* ---- Persistieren ---- */
+  useEffect(() => { if (booted) storageSet(KEYS.watchlist, JSON.stringify(watchlist)); }, [watchlist, booted]);
+  useEffect(() => { if (booted) storageSet(KEYS.settings, JSON.stringify(settings)); }, [settings, booted]);
+
+  /* ---- Kurse laden ---- */
+  const fetchQuote = useCallback(async (symbol) => {
+    const key = apiKeyRef.current;
+    if (!key) return;
+    try {
+      const q = await finnhub(`/quote?symbol=${encodeURIComponent(symbol)}`, key);
+      if (!q || q.c === 0 || q.c === null || q.c === undefined) {
+        setQuotes(prev => ({ ...prev, [symbol]: { error: new ApiError("nodata") } }));
+        return;
+      }
+      setQuotes(prev => ({ ...prev, [symbol]: { c: q.c, d: q.d, dp: q.dp, o: q.o, h: q.h, l: q.l, pc: q.pc } }));
+      setHistory(prev => {
+        const arr = prev[symbol] ? prev[symbol].slice(-MAX_HISTORY + 1) : [];
+        return { ...prev, [symbol]: [...arr, { t: Date.now(), c: q.c }] };
+      });
+      return;
+    } catch (err) {
+      if (err.kind === "auth" || err.kind === "rate" || err.kind === "network") throw err;
+      setQuotes(prev => ({ ...prev, [symbol]: { ...(prev[symbol] || {}), error: err } }));
+    }
+  }, []);
+
+  const refreshAll = useCallback(async (list) => {
+    const symbols = list || watchlist;
+    if (!apiKeyRef.current || symbols.length === 0 || refreshLock.current) return;
+    refreshLock.current = true;
+    setRefreshing(true);
+    setGlobalError(null);
+    try {
+      const results = await Promise.allSettled(symbols.map(s => fetchQuote(s)));
+      const fatal = results.find(r => r.status === "rejected");
+      if (fatal) setGlobalError(fatal.reason);
+      else setLastUpdate(new Date());
+    } finally {
+      refreshLock.current = false;
+      setRefreshing(false);
+    }
+  }, [watchlist, fetchQuote]);
+
+  /* ---- Polling ---- */
+  useEffect(() => {
+    if (!apiKey || !booted || watchlist.length === 0) return;
+    refreshAll(watchlist);
+    const id = setInterval(() => refreshAll(watchlist), settings.intervalSec * 1000);
+    return () => clearInterval(id);
+  }, [apiKey, booted, watchlist, settings.intervalSec]); // eslint-disable-line
+
+  /* ---- News laden (mit Cache) ---- */
+  const loadNews = useCallback(async (symbol) => {
+    const key = apiKeyRef.current;
+    if (!key) return;
+    let stale = true;
+    setNews(prev => {
+      const cur = prev[symbol];
+      if (cur && (cur.loading || (cur.fetchedAt && Date.now() - cur.fetchedAt < NEWS_CACHE_MS && !cur.error))) {
+        stale = false;
+        return prev;
+      }
+      return { ...prev, [symbol]: { loading: true } };
+    });
+    if (!stale) return;
+    try {
+      const items = await finnhub(
+        `/company-news?symbol=${encodeURIComponent(symbol)}&from=${isoDaysAgo(7)}&to=${isoDaysAgo(0)}`,
+        key
+      );
+      const cleaned = (Array.isArray(items) ? items : [])
+        .filter(n => n && n.headline && n.url)
+        .sort((a, b) => (b.datetime || 0) - (a.datetime || 0))
+        .slice(0, 12);
+      setNews(prev => ({ ...prev, [symbol]: { items: cleaned, fetchedAt: Date.now() } }));
+    } catch (err) {
+      setNews(prev => ({ ...prev, [symbol]: { error: err, fetchedAt: Date.now() } }));
+    }
+  }, []);
+
+  /* ---- API-Key setzen (mit Validierung) ---- */
+  const submitKey = useCallback(async (key) => {
+    setKeyBusy(true);
+    setKeyError(null);
+    try {
+      await finnhub("/quote?symbol=AAPL", key);
+      setApiKey(key);
+      apiKeyRef.current = key;
+      await storageSet(KEYS.apiKey, key);
+    } catch (err) {
+      setKeyError(err.kind === "auth"
+        ? "Dieser Key wurde von Finnhub abgelehnt. Bitte prüfe ihn und versuche es erneut."
+        : errorText(err));
+    } finally {
+      setKeyBusy(false);
+    }
+  }, []);
+
+  const resetKey = useCallback(async () => {
+    setShowSettings(false);
+    setApiKey(null);
+    setQuotes({});
+    setHistory({});
+    setNews({});
+    setGlobalError(null);
+    setLastUpdate(null);
+    await storageSet(KEYS.apiKey, "");
+  }, []);
+
+  /* ---- Watchlist bearbeiten ---- */
+  const addSymbol = useCallback(async () => {
+    const sym = addValue.trim().toUpperCase();
+    if (!sym) return;
+    if (!/^[A-Z0-9.\-]{1,12}$/.test(sym)) {
+      setAddError("Bitte ein gültiges Ticker-Symbol eingeben (z. B. AAPL).");
+      return;
+    }
+    if (watchlist.includes(sym)) {
+      setAddError(`${sym} ist schon auf deiner Watchlist.`);
+      return;
+    }
+    setAddBusy(true);
+    setAddError(null);
+    try {
+      const q = await finnhub(`/quote?symbol=${encodeURIComponent(sym)}`, apiKeyRef.current);
+      if (!q || !q.c) {
+        setAddError(`Für „${sym}“ wurden keine Kursdaten gefunden. Tipp: US-Ticker funktionieren im Free-Tier am zuverlässigsten.`);
+        return;
+      }
+      setQuotes(prev => ({ ...prev, [sym]: { c: q.c, d: q.d, dp: q.dp, o: q.o, h: q.h, l: q.l, pc: q.pc } }));
+      setHistory(prev => ({ ...prev, [sym]: [{ t: Date.now(), c: q.c }] }));
+      setWatchlist(prev => [...prev, sym]);
+      setAddValue("");
+    } catch (err) {
+      setAddError(errorText(err));
+    } finally {
+      setAddBusy(false);
+    }
+  }, [addValue, watchlist]);
+
+  const removeSymbol = useCallback((sym) => {
+    setWatchlist(prev => prev.filter(s => s !== sym));
+    setDetailSymbol(cur => (cur === sym ? null : cur));
+  }, []);
+
+  /* ---- Render ---- */
+  if (!booted) {
+    return (
+      <div style={{ minHeight: "100dvh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <Spinner size={26} />
+      </div>
+    );
+  }
+
+  if (!apiKey) {
+    return <KeyScreen onSubmit={submitKey} busy={keyBusy} error={keyError} />;
+  }
+
+  const movedSet = new Set(
+    watchlist.filter(s => {
+      const q = quotes[s];
+      return q && q.dp != null && isFinite(q.dp) && Math.abs(q.dp) >= settings.threshold;
+    })
+  );
+
+  return (
+    <div style={{ minHeight: "100dvh", maxWidth: 520, margin: "0 auto" }}>
+      {/* Header */}
+      <header style={{
+        position: "sticky", top: 0, zIndex: 10,
+        background: "rgba(247,247,249,0.92)", backdropFilter: "blur(14px)", WebkitBackdropFilter: "blur(14px)",
+        padding: `calc(var(--safe-top) + 14px) 16px 10px`,
+      }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <h1 style={{ fontSize: 28, fontWeight: 800, margin: 0, letterSpacing: -0.6 }}>Watchlist</h1>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button
+              onClick={() => refreshAll()}
+              disabled={refreshing}
+              aria-label="Aktualisieren"
+              style={{
+                width: 44, height: 44, borderRadius: "50%", border: "none",
+                background: "var(--bg)", boxShadow: "var(--card-shadow)",
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              {refreshing ? <Spinner size={17} /> : (
+                <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 12a9 9 0 1 1-2.64-6.36" />
+                  <polyline points="21 3 21 9 15 9" />
+                </svg>
+              )}
+            </button>
+            <button
+              onClick={() => setShowSettings(true)}
+              aria-label="Einstellungen"
+              style={{
+                width: 44, height: 44, borderRadius: "50%", border: "none",
+                background: "var(--bg)", boxShadow: "var(--card-shadow)",
+                cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="var(--text-2)" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="12" cy="12" r="3.2" />
+                <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1.03 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1.03H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.7 1.7 0 0 0 1.87.34h.08a1.7 1.7 0 0 0 1.03-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1.03 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87v.08a1.7 1.7 0 0 0 1.56 1.03H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1.03Z" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 2, minHeight: 18 }}>
+          <span style={{ fontSize: 12.5, color: "var(--text-3)" }}>
+            {lastUpdate ? `Stand ${fmtClock(lastUpdate)} · alle ${settings.intervalSec} s` : refreshing ? "Lade Kurse …" : ""}
+          </span>
+          {watchlist.length > 0 && (
+            <button
+              onClick={() => setEditMode(m => !m)}
+              style={{
+                background: "none", border: "none", color: "var(--accent)",
+                fontSize: 14.5, fontWeight: 600, cursor: "pointer", padding: "6px 2px",
+              }}
+            >
+              {editMode ? "Fertig" : "Bearbeiten"}
+            </button>
+          )}
+        </div>
+      </header>
+
+      <main style={{ padding: `4px 16px calc(var(--safe-bottom) + 28px)` }}>
+        {/* Fehler-Banner */}
+        {globalError && (
+          <div style={{
+            background: "var(--accent-soft)", borderRadius: 14, padding: "12px 14px",
+            fontSize: 13.5, color: "#B34A00", lineHeight: 1.45, marginBottom: 12,
+            display: "flex", gap: 10, alignItems: "flex-start",
+          }}>
+            <span style={{ fontSize: 16, lineHeight: 1.2 }}>⚠️</span>
+            <span>{errorText(globalError)}</span>
+          </div>
+        )}
+
+        {/* Symbol hinzufügen */}
+        <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+          <input
+            value={addValue}
+            onChange={(e) => { setAddValue(e.target.value.toUpperCase()); setAddError(null); }}
+            onKeyDown={(e) => { if (e.key === "Enter") addSymbol(); }}
+            placeholder="Symbol hinzufügen (z. B. ASML)"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck="false"
+            style={{
+              flex: 1, fontSize: 16, padding: "0 16px", borderRadius: 14,
+              border: "1.5px solid #E3E3E7", background: "var(--bg)",
+              outline: "none", minHeight: 50,
+            }}
+            onFocus={(e) => e.target.style.borderColor = "var(--accent)"}
+            onBlur={(e) => e.target.style.borderColor = "#E3E3E7"}
+          />
+          <button
+            onClick={addSymbol}
+            disabled={!addValue || addBusy}
+            aria-label="Hinzufügen"
+            style={{
+              width: 50, height: 50, borderRadius: 14, border: "none",
+              background: !addValue || addBusy ? "#FFC59E" : "var(--accent)",
+              color: "#fff", fontSize: 26, fontWeight: 600, cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+            }}
+          >
+            {addBusy ? <Spinner size={17} color="#fff" /> : "+"}
+          </button>
+        </div>
+        {addError && (
+          <p style={{ fontSize: 13.5, color: "var(--red)", margin: "4px 2px 10px", lineHeight: 1.4 }}>{addError}</p>
+        )}
+
+        {/* Liste */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 10 }}>
+          {watchlist.length === 0 ? (
+            <Card>
+              <div style={{ textAlign: "center", padding: "18px 6px" }}>
+                <div style={{ fontSize: 34, marginBottom: 10 }}>📈</div>
+                <div style={{ fontSize: 16.5, fontWeight: 700, marginBottom: 6 }}>Noch keine Aktien</div>
+                <p style={{ fontSize: 14, color: "var(--text-2)", margin: 0, lineHeight: 1.5 }}>
+                  Füge oben ein Ticker-Symbol hinzu – zum Beispiel AAPL, NVDA oder TSLA.
+                </p>
+              </div>
+            </Card>
+          ) : (
+            watchlist.map(sym => (
+              <StockCard
+                key={sym}
+                symbol={sym}
+                quote={quotes[sym]}
+                moved={movedSet.has(sym)}
+                editMode={editMode}
+                onRemove={removeSymbol}
+                onOpen={setDetailSymbol}
+                newsState={news[sym]}
+                onLoadNews={loadNews}
+              />
+            ))
+          )}
+        </div>
+
+        {watchlist.length > 0 && (
+          <p style={{ fontSize: 12, color: "var(--text-3)", textAlign: "center", marginTop: 22, lineHeight: 1.5 }}>
+            Hervorhebung ab ±{settings.threshold.toLocaleString("de-DE", { minimumFractionDigits: 1 })} % Tagesveränderung ·
+            Daten von Finnhub
+          </p>
+        )}
+      </main>
+
+      {/* Overlays */}
+      {detailSymbol && (
+        <DetailView
+          symbol={detailSymbol}
+          quote={quotes[detailSymbol]}
+          history={history[detailSymbol]}
+          moved={movedSet.has(detailSymbol)}
+          threshold={settings.threshold}
+          newsState={news[detailSymbol]}
+          onLoadNews={loadNews}
+          onBack={() => setDetailSymbol(null)}
+          onRemove={removeSymbol}
+        />
+      )}
+      {showSettings && (
+        <SettingsSheet
+          settings={settings}
+          onChange={setSettings}
+          onClose={() => setShowSettings(false)}
+          onResetKey={resetKey}
+        />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
